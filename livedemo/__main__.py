@@ -5,6 +5,8 @@ import os
 import pathlib
 import pty
 import random
+import shutil
+import struct
 import subprocess
 import sys
 import time
@@ -25,10 +27,16 @@ def input_string(pty: IO, b: bytes, is_interactive: bool):
         fcntl.ioctl(pty.fileno(), termios.TIOCSTI, c.to_bytes(1, sys.byteorder))
 
 
-def set_ctty(slave_fd: int, master_fd: int):
+def set_winsize(fd: int, row: int, col: int, xpix: int = 0, ypix: int = 0):
+    winsize = struct.pack("HHHH", row, col, xpix, ypix)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+
+
+def set_ctty(slave_fd: int, master_fd: int, rows: int, cols: int):
     os.setsid()
     os.close(master_fd)
     fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+    set_winsize(slave_fd, rows, cols)
 
 
 def splice_master(master: IO):
@@ -68,12 +76,14 @@ def toggle_echo(slave_fd: int):
 def run_demo(commands: list[bytes], is_interactive: bool):
     master_fd, slave_fd = pty.openpty()
 
+    cols, rows = shutil.get_terminal_size()
+
     p = subprocess.Popen(
         ["bash"],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
-        preexec_fn=functools.partial(set_ctty, slave_fd, master_fd),
+        preexec_fn=functools.partial(set_ctty, slave_fd, master_fd, rows, cols),
     )
 
     with os.fdopen(master_fd, "rb") as master:
