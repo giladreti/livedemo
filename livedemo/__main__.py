@@ -17,13 +17,17 @@ import tty
 from typing import IO, Callable
 
 
+def input_char(slave_fd: int, ch: bytes):
+    fcntl.ioctl(slave_fd, termios.TIOCSTI, ch)
+
+
 def input_string_generic(slave_fd: IO, b: bytes, delay_fn: Callable[[], None]):
     read_char()
 
-    for c in b:
+    for ch in b:
         delay_fn()
 
-        fcntl.ioctl(slave_fd, termios.TIOCSTI, c.to_bytes(1, sys.byteorder))
+        input_char(slave_fd, ch.to_bytes(1, sys.byteorder))
 
 
 def input_string_interactive(slave_fd: IO, b: bytes):
@@ -31,7 +35,9 @@ def input_string_interactive(slave_fd: IO, b: bytes):
 
 
 def input_string_noninteractive(slave_fd: IO, b: bytes, rate: float):
-    return input_string_generic(slave_fd, b, delay_fn=lambda: time.sleep(random.random() / rate))
+    return input_string_generic(
+        slave_fd, b, delay_fn=lambda: time.sleep(random.random() / rate)
+    )
 
 
 def set_winsize(fd: int, row: int, col: int, xpix: int = 0, ypix: int = 0):
@@ -77,6 +83,12 @@ def toggle_echo(slave_fd: int):
     termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
 
 
+def interact(slave_fd: int, p: subprocess.Popen):
+    while is_alive(p):
+        ch = read_char()
+        input_char(slave_fd, ch)
+
+
 def is_alive(p: subprocess.Popen) -> bool:
     try:
         p.wait(0)
@@ -85,12 +97,18 @@ def is_alive(p: subprocess.Popen) -> bool:
     return False
 
 
-def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate: float):
+def run_demo(
+    interpreter: str,
+    commands: list[bytes],
+    is_interactive: bool,
+    rate: float,
+    keep: bool,
+):
     master_fd, slave_fd = pty.openpty()
 
     cols, rows = shutil.get_terminal_size()
 
-    os.system("clear")
+    os.system("clear")  # clear screen
 
     p = subprocess.Popen(
         [interpreter],
@@ -102,7 +120,9 @@ def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate
 
     with os.fdopen(master_fd, "rb") as master:
         end_event = threading.Event()
-        t = threading.Thread(target=splice_master, args=(master, end_event), daemon=True)
+        t = threading.Thread(
+            target=splice_master, args=(master, end_event), daemon=True
+        )
         t.start()
 
         for command in commands:
@@ -111,25 +131,43 @@ def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate
             else:
                 input_string_noninteractive(slave_fd, command, rate)
 
+        if keep:
+            interact(slave_fd, p)
+
         if is_alive(p):
             input_string_noninteractive(slave_fd, b"exit\n", rate)
 
         end_event.set()
         p.wait()
 
+        input_char(slave_fd, b" ")  # release reading thread
+
 
 def main():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
     parser.add_argument("script_path", type=pathlib.Path, help="the demo script path")
-    parser.add_argument("--interpreter", "--interp", default="bash", help="the interpreter to execuet the demo in")
+    parser.add_argument(
+        "--interpreter",
+        "--interp",
+        default="bash",
+        help="the interpreter to execuet the demo in",
+    )
+
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="whether to keep the demo for interaction after it has ended",
+    )
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "-i",
         "--interactive",
         action="store_true",
-        help="whether or not to emulate user keystrokes",
+        help="whether to emulate user keystrokes",
     )
     group.add_argument(
         "-r",
@@ -143,7 +181,7 @@ def main():
 
     commands = args.script_path.read_bytes().splitlines(keepends=True)
 
-    run_demo(args.interpreter, commands, args.interactive, args.rate)
+    run_demo(args.interpreter, commands, args.interactive, args.rate, args.keep)
 
 
 if __name__ == "__main__":
