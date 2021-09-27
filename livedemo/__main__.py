@@ -93,6 +93,8 @@ def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate
 
     cols, rows = shutil.get_terminal_size()
 
+    os.system("clear")
+
     p = subprocess.Popen(
         [interpreter],
         stdin=slave_fd,
