@@ -46,13 +46,10 @@ def set_ctty(slave_fd: int, master_fd: int, rows: int, cols: int):
     set_winsize(slave_fd, rows, cols)
 
 
-def splice_master(master: IO):
-    while True:
-        try:
-            sys.stdout.buffer.write(master.read(1))
-            sys.stdout.flush()
-        except OSError:
-            break
+def splice_master(master: IO, end_event: threading.Event):
+    while not end_event.is_set():
+        sys.stdout.buffer.write(master.read(1))
+        sys.stdout.flush()
 
 
 def read_char() -> str:
@@ -104,7 +101,8 @@ def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate
     )
 
     with os.fdopen(master_fd, "rb") as master:
-        t = threading.Thread(target=splice_master, args=(master,), daemon=True)
+        end_event = threading.Event()
+        t = threading.Thread(target=splice_master, args=(master, end_event), daemon=True)
         t.start()
 
         for command in commands:
@@ -116,6 +114,7 @@ def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate
         if is_alive(p):
             input_string_noninteractive(slave_fd, b"exit\n", rate)
 
+        end_event.set()
         p.wait()
 
 
