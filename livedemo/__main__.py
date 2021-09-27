@@ -14,17 +14,24 @@ import termios
 import threading
 import tty
 
-from typing import IO
+from typing import IO, Callable
 
 
-def input_string(pty: IO, b: bytes, is_interactive: bool):
+def input_string_generic(slave_fd: IO, b: bytes, delay_fn: Callable[[], None]):
+    read_char()
+
     for c in b:
-        if is_interactive:
-            read_char()
-        else:
-            time.sleep(random.random() / 2)
+        delay_fn()
 
-        fcntl.ioctl(pty.fileno(), termios.TIOCSTI, c.to_bytes(1, sys.byteorder))
+        fcntl.ioctl(slave_fd, termios.TIOCSTI, c.to_bytes(1, sys.byteorder))
+
+
+def input_string_interactive(slave_fd: IO, b: bytes):
+    return input_string_generic(slave_fd, b, delay_fn=read_char())
+
+
+def input_string_noninteractive(slave_fd: IO, b: bytes, rate: float):
+    return input_string_generic(slave_fd, b, delay_fn=lambda: time.sleep(random.random() / rate))
 
 
 def set_winsize(fd: int, row: int, col: int, xpix: int = 0, ypix: int = 0):
@@ -42,7 +49,7 @@ def set_ctty(slave_fd: int, master_fd: int, rows: int, cols: int):
 def splice_master(master: IO):
     while True:
         try:
-            sys.stdout.write(master.read(1).decode())
+            sys.stdout.buffer.write(master.read(1))
             sys.stdout.flush()
         except OSError:
             break
@@ -73,13 +80,21 @@ def toggle_echo(slave_fd: int):
     termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
 
 
-def run_demo(commands: list[bytes], is_interactive: bool):
+def is_alive(p: subprocess.Popen) -> bool:
+    try:
+        p.wait(0)
+    except subprocess.TimeoutExpired:
+        return True
+    return False
+
+
+def run_demo(interpreter: str, commands: list[bytes], is_interactive: bool, rate: float):
     master_fd, slave_fd = pty.openpty()
 
     cols, rows = shutil.get_terminal_size()
 
     p = subprocess.Popen(
-        ["bash"],
+        [interpreter],
         stdin=slave_fd,
         stdout=slave_fd,
         stderr=slave_fd,
@@ -87,38 +102,47 @@ def run_demo(commands: list[bytes], is_interactive: bool):
     )
 
     with os.fdopen(master_fd, "rb") as master:
-        t = threading.Thread(target=splice_master, args=(master,))
+        t = threading.Thread(target=splice_master, args=(master,), daemon=True)
         t.start()
 
-        with os.fdopen(slave_fd, "rb") as slave:
-            for command in commands:
-                input_string(slave, command, is_interactive)
-                read_char()
+        for command in commands:
+            if is_interactive:
+                input_string_interactive(slave_fd, command)
+            else:
+                input_string_noninteractive(slave_fd, command, rate)
 
-            try:
-                p.wait(0)
-            except subprocess.TimeoutExpired:
-                input_string(slave, b"exit\n", is_interactive)
+        if is_alive(p):
+            input_string_noninteractive(slave_fd, b"exit\n", rate)
 
         p.wait()
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument("script_path", type=pathlib.Path, help="the demo script path")
-    parser.add_argument(
+    parser.add_argument("--interpreter", "--interp", default="bash", help="the interpreter to execuet the demo in")
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "-i",
         "--interactive",
         action="store_true",
         help="whether or not to emulate user keystrokes",
+    )
+    group.add_argument(
+        "-r",
+        "--rate",
+        type=float,
+        default=2,
+        help="the keystrokes rate",
     )
 
     args = parser.parse_args()
 
     commands = args.script_path.read_bytes().splitlines(keepends=True)
 
-    run_demo(commands, args.interactive)
+    run_demo(args.interpreter, commands, args.interactive, args.rate)
 
 
 if __name__ == "__main__":
