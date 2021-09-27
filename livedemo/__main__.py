@@ -61,8 +61,6 @@ def splice_master(master: IO, end_event: threading.Event):
 def read_char() -> str:
     fd = sys.stdin.fileno()
 
-    toggle_echo(fd)
-
     attrs = termios.tcgetattr(fd)
 
     try:
@@ -70,8 +68,6 @@ def read_char() -> str:
         ch = sys.stdin.read(1)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-
-    toggle_echo(fd)
 
     return ch
 
@@ -125,6 +121,8 @@ def run_demo(
         )
         t.start()
 
+        toggle_echo(sys.stdin.fileno())
+
         for command in commands:
             if is_interactive:
                 input_string_interactive(slave_fd, command)
@@ -134,13 +132,12 @@ def run_demo(
         if keep:
             interact(slave_fd, p)
 
-        if is_alive(p):
-            input_string_noninteractive(slave_fd, b"exit\n", rate)
-
         end_event.set()
         p.wait()
 
         input_char(slave_fd, b" ")  # release reading thread
+
+        toggle_echo(sys.stdin.fileno())
 
 
 def main():
@@ -161,6 +158,12 @@ def main():
         action="store_true",
         help="whether to keep the demo for interaction after it has ended",
     )
+    parser.add_argument(
+        "--remove_empty",
+        action="store_true",
+        default=True,
+        help="whether to remove empty input lines from demo",
+    )
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -179,7 +182,10 @@ def main():
 
     args = parser.parse_args()
 
-    commands = args.script_path.read_bytes().splitlines(keepends=True)
+    script_path: pathlib.Path = args.script_path
+    commands = script_path.read_bytes().splitlines(keepends=True)
+    if args.remove_empty:
+        commands = [command for command in commands if not command.isspace()]
 
     run_demo(args.interpreter, commands, args.interactive, args.rate, args.keep)
 
